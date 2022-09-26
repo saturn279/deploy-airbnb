@@ -4,4 +4,4 @@ xgboost
 pandas
 requests
 numpy
-matplotlib
+matplotlib == 3.5.2
