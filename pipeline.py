@@ -62,6 +62,157 @@ class Preprocess:
             {"link": links, 'country': [x.split('/')[3] for x in links], 'state': [x.split('/')[4] for x in links],
              'city': [x.split('/')[5] for x in links], 'type': [re.search(r'(\w*)\.csv', x)[1] for x in links]})
 
+class City:
+    def __init__(self, name, urls):
+        parsed_urls = Preprocess.parse_urls(urls)
+        self.name = name
+        self.listings_url = parsed_urls.loc[(parsed_urls['type'] == 'listings') & (parsed_urls['city'] == name)].iloc[
+            0].link
+        self.calendar_url = parsed_urls.loc[(parsed_urls['type'] == 'calendar') & (parsed_urls['city'] == name)].iloc[
+            0].link
+
+class DataInterface:
+    def __init__(self, name, storage_type='local', access_mode='default', location=None, get_data=None):
+        self.city = name
+        self.storage_type = storage_type
+        self.location = location
+        self.access_mode = access_mode
+        if get_data is not None:
+            self.get_data = get_data
+
+    def get_data(self):
+        if self.storage_type == 'local':
+            self.location = self.location if self.location is not None else f'./Data/{self.city}'
+            return  'listings', pd.read_csv(f'{self.location}/listings.csv') 
+        elif self.storage_type == 'hdfs':
+            import os
+            import sys
+
+            os.environ["SPARK_HOME"] = "/home/talentum/spark"
+            os.environ["PYLIB"] = os.environ["SPARK_HOME"] + "/python/lib"
+            os.environ["PYSPARK_PYTHON"] = "/usr/bin/python3.6" 
+            os.environ["PYSPARK_DRIVER_PYTHON"] = "/usr/bin/python3"
+            sys.path.insert(0, os.environ["PYLIB"] +"/py4j-0.10.7-src.zip")
+            sys.path.insert(0, os.environ["PYLIB"] +"/pyspark.zip")
+            os.environ['PYSPARK_SUBMIT_ARGS'] = '--packages com.databricks:spark-xml_2.11:0.6.0,org.apache.spark:spark-avro_2.11:2.4.3 pyspark-shell'
+
+            from pyspark.sql import SparkSession
+            spark = SparkSession.builder.appName("Spark AirBnb Data storage").enableHiveSupport().getOrCreate()
+            sc = spark.sparkContext
+
+            a=spark.read.parquet(f'/Data/{self.city}')
+            pandasDF = a.toPandas()
+            print(pandasDF.head())
+            return  'listings',pandasDF
+        
+    
+
+    def get_insight_engine(self):
+        import pickle
+        if self.storage_type == 'local':
+            self.location = self.location if self.location is not None else f'./Data/{self.city}'
+            return pickle.load(open(f'{self.location}/InsightEngine.obj', 'rb'))
+        else:
+            self.location = self.location if self.location is not None else f'./Data/{self.city}'
+            return pickle.load(open(f'{self.location}/InsightEngine.obj', 'rb'))
+
+    def save_insight_engine(self,obj):
+        import pickle
+        if self.storage_type == 'local':
+            self.location = self.location if self.location is not None else f'./Data/{self.city}'
+            return pickle.dump(obj,open(f'{self.location}/InsightEngine.obj', 'wb'))
+        else:
+            self.location = self.location if self.location is not None else f'./Data/{self.city}'
+            return pickle.dump(obj,open(f'{self.location}/InsightEngine.obj', 'wb'))
+
+
+    def get_model(self,target):
+        """return revenue and booking rate model"""
+        import pickle
+        if self.storage_type == 'local':
+            self.location = self.location if self.location is not None else f'./Data/{self.city}'
+            return pickle.load(open(f'{self.location}/{target}.model', 'rb'))
+        else:
+            self.location = self.location if self.location is not None else f'./Data/{self.city}'
+            return pickle.load(open(f'{self.location}/{target}.model', 'rb'))
+
+    def save_model(self,estimator,target):
+        import pickle
+        if self.storage_type == 'local':
+            self.location = self.location if self.location is not None else f'./Data/{self.city}'
+            return pickle.dump(estimator,open(f'{self.location}/{target}.model', 'wb'))
+        else:
+            self.location = self.location if self.location is not None else f'./Data/{self.city}'
+            return pickle.dump(estimator,open(f'{self.location}/{target}.model', 'wb'))
+        
+    def save_metrics(self,target,metrics):
+        if self.storage_type == 'local':
+            file=open('metrics.csv','a')
+            file.write('\n'+self.city+','+target+','+','.join([str(n) for n in metrics.values()]))
+            file.close()
+        else:
+            file=open('metrics.csv','a')
+            file.write('\n'+self.city+','+target+','+','.join([str(n) for n in metrics.values()]))
+            file.close()
+        
+class ETL:
+    def __init__(self, city: City, storage_type='local', storage_location=None):
+        self.city = city
+        self.storage_type = storage_type
+        self.storage_location = storage_location
+        self.calendar_df = None
+        self.listings_df = None
+        from time import time
+        self.time=time
+
+    def extract(self):  
+        self.listings_df = pd.read_csv(self.city.listings_url)
+        self.calendar_df = pd.read_csv(self.city.calendar_url)
+        log[self.time()]='extraction completed....'
+        print('extraction completed....')
+
+    def transform(self):
+        self.calender_df,self.listings_df = Preprocess.get_processed_dfs(calendar_df=self.calendar_df, listings_df=self.listings_df)
+        log[self.time()]='transformation completed....'
+        print('transformation completed....')
+        
+    def load(self):
+        import os
+        import sys
+        if self.storage_type == 'local':
+            self.storage_location = self.storage_location if self.storage_location is not None else f'./Data/{self.city.name}'
+            os.makedirs(self.storage_location, exist_ok=True)
+            #self.calendar_df.to_csv(f'{self.storage_location}/calendar.csv')
+            self.listings_df.to_csv(f'{self.storage_location}/listings.csv')
+            log[self.time()]='done loading....'
+            print('done loading....')
+        elif self.storage_type == 'hdfs':
+             # import os
+             # import sys
+             
+             os.environ["SPARK_HOME"] = "/home/talentum/spark"
+             os.environ["PYLIB"] = os.environ["SPARK_HOME"] + "/python/lib"
+             os.environ["PYSPARK_PYTHON"] = "/usr/bin/python3.6" 
+             os.environ["PYSPARK_DRIVER_PYTHON"] = "/usr/bin/python3"
+             sys.path.insert(0, os.environ["PYLIB"] +"/py4j-0.10.7-src.zip")
+             sys.path.insert(0, os.environ["PYLIB"] +"/pyspark.zip")
+             os.environ['PYSPARK_SUBMIT_ARGS'] = '--packages com.databricks:spark-xml_2.11:0.6.0,org.apache.spark:spark-avro_2.11:2.4.3 pyspark-shell'
+
+             from pyspark.sql import SparkSession
+             spark = SparkSession.builder.appName("Spark AirBnb Data storage").enableHiveSupport().getOrCreate()
+             sc = spark.sparkContext
+
+             df = spark.createDataFrame(self.listings_df)
+             df.coalesce(1).write.parquet(f'/Data/{self.city.name}')
+            
+    def export_data_interface(self, tofile=False, path='.'):
+        dif = DataInterface(self.city.name, storage_type=self.storage_type, location=self.storage_location)
+        if tofile:
+            import pickle
+            pickle.dump(dif, open(f'{path}/DataInterface_{self.city.name}.obj', 'wb'))
+        else:
+            return dif
+
 class Model:
     def __init__(self,data_interface,target:str,estimator=None):
         self.data_interface=data_interface
@@ -187,184 +338,6 @@ class Model:
         
     def get_scaled(self,X_in):
         return self.scalar.transform(X_in)
-    
-            
-            
-class City:
-    def __init__(self, name, urls):
-        parsed_urls = Preprocess.parse_urls(urls)
-        self.name = name
-        self.listings_url = parsed_urls.loc[(parsed_urls['type'] == 'listings') & (parsed_urls['city'] == name)].iloc[
-            0].link
-        self.calendar_url = parsed_urls.loc[(parsed_urls['type'] == 'calendar') & (parsed_urls['city'] == name)].iloc[
-            0].link
-
-
-class Demo(object):
-  def __init__(self, val=2):
-     self.val = val
-  def __getstate__(self):
-     print("I'm being pickled")
-     self.val *= 2
-     return self.__dict__
-  def __setstate__(self, d):
-     print("I'm being unpickled with these values: " + repr(d))
-     self.__dict__ = d
-     self.val *= 3
-
-
-
-class DataInterface:
-    def __init__(self, name, storage_type='local', access_mode='default', location=None, get_data=None):
-        self.city = name
-        self.storage_type = storage_type
-        self.location = location
-        self.access_mode = access_mode
-        if get_data is not None:
-            self.get_data = get_data
-
-    def get_data(self):
-        if self.storage_type == 'local':
-            self.location = self.location if self.location is not None else f'./Data/{self.city}'
-            return  'listings', pd.read_csv(f'{self.location}/listings.csv') 
-        elif self.storage_type == 'hdfs':
-            import os
-            import sys
-
-            os.environ["SPARK_HOME"] = "/home/talentum/spark"
-            os.environ["PYLIB"] = os.environ["SPARK_HOME"] + "/python/lib"
-            os.environ["PYSPARK_PYTHON"] = "/usr/bin/python3.6" 
-            os.environ["PYSPARK_DRIVER_PYTHON"] = "/usr/bin/python3"
-            sys.path.insert(0, os.environ["PYLIB"] +"/py4j-0.10.7-src.zip")
-            sys.path.insert(0, os.environ["PYLIB"] +"/pyspark.zip")
-            os.environ['PYSPARK_SUBMIT_ARGS'] = '--packages com.databricks:spark-xml_2.11:0.6.0,org.apache.spark:spark-avro_2.11:2.4.3 pyspark-shell'
-
-            from pyspark.sql import SparkSession
-            spark = SparkSession.builder.appName("Spark AirBnb Data storage").enableHiveSupport().getOrCreate()
-            sc = spark.sparkContext
-
-            a=spark.read.parquet(f'/Data/{self.city}')
-            pandasDF = a.toPandas()
-            print(pandasDF.head())
-            return  'listings',pandasDF
-        
-    
-
-    def get_insight_engine(self):
-        import pickle
-        if self.storage_type == 'local':
-            self.location = self.location if self.location is not None else f'./Data/{self.city}'
-            return pickle.load(open(f'{self.location}/InsightEngine.obj', 'rb'))
-        else:
-            self.location = self.location if self.location is not None else f'./Data/{self.city}'
-            return pickle.load(open(f'{self.location}/InsightEngine.obj', 'rb'))
-
-    def save_insight_engine(self,obj):
-        import pickle
-        if self.storage_type == 'local':
-            self.location = self.location if self.location is not None else f'./Data/{self.city}'
-            return pickle.dump(obj,open(f'{self.location}/InsightEngine.obj', 'wb'))
-        else:
-            self.location = self.location if self.location is not None else f'./Data/{self.city}'
-            return pickle.dump(obj,open(f'{self.location}/InsightEngine.obj', 'wb'))
-
-
-    def get_model(self,target):
-        """return revenue and booking rate model"""
-        import pickle
-        if self.storage_type == 'local':
-            self.location = self.location if self.location is not None else f'./Data/{self.city}'
-            return pickle.load(open(f'{self.location}/{target}.model', 'rb'))
-        else:
-            self.location = self.location if self.location is not None else f'./Data/{self.city}'
-            return pickle.load(open(f'{self.location}/{target}.model', 'rb'))
-
-    def save_model(self,estimator,target):
-        import pickle
-        if self.storage_type == 'local':
-            self.location = self.location if self.location is not None else f'./Data/{self.city}'
-            return pickle.dump(estimator,open(f'{self.location}/{target}.model', 'wb'))
-        else:
-            self.location = self.location if self.location is not None else f'./Data/{self.city}'
-            return pickle.dump(estimator,open(f'{self.location}/{target}.model', 'wb'))
-        
-    def save_metrics(self,target,metrics):
-        if self.storage_type == 'local':
-            file=open('metrics.csv','a')
-            file.write('\n'+self.city+','+target+','+','.join([str(n) for n in metrics.values()]))
-            file.close()
-        else:
-            file=open('metrics.csv','a')
-            file.write('\n'+self.city+','+target+','+','.join([str(n) for n in metrics.values()]))
-            file.close()
-        
-
-
-class ETL:
-    def __init__(self, city: City, storage_type='local', storage_location=None):
-        self.city = city
-        self.storage_type = storage_type
-        self.storage_location = storage_location
-        self.calendar_df = None
-        self.listings_df = None
-        from time import time
-        self.time=time
-
-    def extract(self):  
-        self.listings_df = pd.read_csv(self.city.listings_url)
-        self.calendar_df = pd.read_csv(self.city.calendar_url)
-        log[self.time()]='extraction completed....'
-        print('extraction completed....')
-
-    def transform(self):
-        self.calender_df,self.listings_df = Preprocess.get_processed_dfs(calendar_df=self.calendar_df, listings_df=self.listings_df)
-        log[self.time()]='transformation completed....'
-        print('transformation completed....')
-        
-    def load(self):
-        import os
-        import sys
-        if self.storage_type == 'local':
-            self.storage_location = self.storage_location if self.storage_location is not None else f'./Data/{self.city.name}'
-            os.makedirs(self.storage_location, exist_ok=True)
-            #self.calendar_df.to_csv(f'{self.storage_location}/calendar.csv')
-            self.listings_df.to_csv(f'{self.storage_location}/listings.csv')
-            log[self.time()]='done loading....'
-            print('done loading....')
-        elif self.storage_type == 'hdfs':
-             # import os
-             # import sys
-             
-             os.environ["SPARK_HOME"] = "/home/talentum/spark"
-             os.environ["PYLIB"] = os.environ["SPARK_HOME"] + "/python/lib"
-             os.environ["PYSPARK_PYTHON"] = "/usr/bin/python3.6" 
-             os.environ["PYSPARK_DRIVER_PYTHON"] = "/usr/bin/python3"
-             sys.path.insert(0, os.environ["PYLIB"] +"/py4j-0.10.7-src.zip")
-             sys.path.insert(0, os.environ["PYLIB"] +"/pyspark.zip")
-             os.environ['PYSPARK_SUBMIT_ARGS'] = '--packages com.databricks:spark-xml_2.11:0.6.0,org.apache.spark:spark-avro_2.11:2.4.3 pyspark-shell'
-
-             from pyspark.sql import SparkSession
-             spark = SparkSession.builder.appName("Spark AirBnb Data storage").enableHiveSupport().getOrCreate()
-             sc = spark.sparkContext
-
-             df = spark.createDataFrame(self.listings_df)
-             df.coalesce(1).write.parquet(f'/Data/{self.city.name}')
-            
-    def export_data_interface(self, tofile=False, path='.'):
-        dif = DataInterface(self.city.name, storage_type=self.storage_type, location=self.storage_location)
-        if tofile:
-            import pickle
-            pickle.dump(dif, open(f'{path}/DataInterface_{self.city.name}.obj', 'wb'))
-        else:
-            return dif
-
-
-
-
-
-
-
-from matplotlib import pyplot as plt
 
 class Listing:
     def __init__(self, kwargs):
@@ -393,7 +366,6 @@ class Insight:
         self.plot = plot
         self.text = text
 
-
 class InsightEngine:
     def __init__(self, datainterface, insights):
         self.datainterface = datainterface
@@ -417,12 +389,12 @@ class InsightEngine:
     def export(self):
         self.datainterface.save_insight_engine(self)
 
-def create_insights(city:str):
+def create_insights(data_interface):
+    from matplotlib import pyplot as plt
     insights=[]
     
     # code for first insight 1
     import pickle
-    data_interface=pickle.load(open(f'DataInterface_{city}.obj','rb'))
     df=data_interface.get_data()[1]
     df_grp = df.groupby("property_type").mean()['revenue'].sort_values(ascending=False).iloc[:5]
     fig1 = plt.figure()
@@ -542,11 +514,8 @@ def create_insights(city:str):
     insight9 = Insight(plot=fig9, title=' How room type affect booking rate/average revenue?')
     insights.append(insight9)
     
-    #code for insight 10
 
-#     #code for insight 10
-    
-   
+    #code for insight 10
     fig10= plt.figure()
     
     plt.scatter(df['review_scores_rating'],df['revenue'], figure=fig10)
@@ -559,7 +528,7 @@ def create_insights(city:str):
     insights.append(insight10)
 
     
-#     #code for insight 11
+    #code for insight 11
     import seaborn as sns
     fig11, ax = plt.subplots()
     sns.countplot(x=df["host_response_time"],figure=fig11 )
@@ -578,22 +547,11 @@ def create_insights(city:str):
     plt.title('Response rate distribution',fontsize=10)
     insight12 = Insight(plot=fig12, title='  Host response rate')
     insights.append(insight12)
-    
-#     #code for insight 14
-    # fig13 = plt.figure()
-    # col_sorted=['revenue','availability_365','beds','accommodates','availability_60','review_scores_rating','reviews_per_month','availability_30'] 
-    # sns.heatmap(df[col_sorted].corr(),annot=True,cmap="YlGnBu",cbar=True,annot_kws={'size': 8},cbar_kws={"shrink":0.82})
-    # insight13 = Insight(plot=fig13, title='  Correlation matrix')
-    # insights.append(insight13)
-   
-    
+
     return insights
-
-
-if __name__ == '__main__':
+def etl(city_name):
     from bs4 import BeautifulSoup
     import requests
-    
     url = "http://insideairbnb.com/get-the-data/"
     req = requests.get(url)
     soup = BeautifulSoup(req.text, "html.parser")
@@ -602,37 +560,54 @@ if __name__ == '__main__':
         if link.get('href') is not None:
             links_scraped.append(link.get('href'))
     links_scraped = [x for x in links_scraped if 'csv' in x]
-    city_name='denver'
     city = City(city_name, links_scraped)
     etl = ETL(city)
     etl.extract()
     etl.transform()
     etl.load()
     etl.export_data_interface(tofile=True)
-    
-    
-    
-    # #modelling
+
+
+def modeling(city_name):
     import pickle
-    model_1=Model(pickle.load(open(f'DataInterface_{city_name}.obj','rb')),target='revenue')
+    data_interface_file=open(f'DataInterface_{city_name}.obj','rb')
+    data_interface=pickle.load(data_interface_file)
+    model_1=Model(data_interface,target='revenue')
     model_1.train()
     model_1.save_metrics()
     print(model_1.save())
-    model_2=Model(pickle.load(open(f'DataInterface_{city_name}.obj','rb')),target='booking_rate')
+    model_2=Model(data_interface,target='booking_rate')
     model_2.train()
     model_2.save_metrics()
     print(model_2.save())
+    data_interface_file.close()
 
 
-
-
-    #insights
+def insights(city_name):
     import pickle
-    insights=create_insights(city_name)
-    insight_engine=InsightEngine(pickle.load(open(f'DataInterface_{city_name}.obj','rb')),insights) 
+    data_interface_file=open(f'DataInterface_{city_name}.obj','rb')
+    data_interface=pickle.load(data_interface_file)
+    insights=create_insights(data_interface)
+    insight_engine=InsightEngine(data_interface,insights) 
+    insight_engine.export()
+    data_interface_file.close()
+    
+
+def combine(city_name):
+    import pickle
+    data_interface_file=open(f'DataInterface_{city_name}.obj','rb')
+    data_interface=pickle.load(data_interface_file)
+    insight_engine=data_interface.get_insight_engine()
     insight_engine.load_model()
     insight_engine.export()
+    data_interface_file.close()
     
+if __name__ == '__main__':
+   city_name='austin'
+   etl(city_name)
+   modeling(city_name)
+   insights(city_name)
+   combine(city_name)
 '''['amsterdam', 'antwerp', 'asheville', 'athens', 'austin', 'bangkok',
        'barcelona', 'barossa-valley', 'barwon-south-west-vic', 'beijing',
        'belize', 'bergamo', 'berlin', 'bologna', 'bordeaux', 'boston',
